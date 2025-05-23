@@ -1,5 +1,7 @@
 # Environment variables
 .env
+.env.local
+.env.*.local
 mediremind_backend/.env
 
 # Python
@@ -20,6 +22,7 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -42,6 +45,7 @@ Thumbs.db
 *.log
 *.pot
 *.pyc
+local_settings.py
 db.sqlite3
 db.sqlite3-journal
 media 
