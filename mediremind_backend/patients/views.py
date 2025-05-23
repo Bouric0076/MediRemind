@@ -408,4 +408,8 @@ def respond_to_appointment(request, appointment_id):
         return JsonResponse({
             "error": "Failed to process appointment response",
             "details": str(e)
+<<<<<<< HEAD
         }, status=500)
+=======
+        }, status=500)
+>>>>>>> 4c8be3e (Implemented Appointment logic for the staff profile app.)
