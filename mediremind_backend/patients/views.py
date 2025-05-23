@@ -6,23 +6,44 @@ from django.views.decorators.csrf import csrf_exempt
 import json
 from supabase_client import admin_client
 from authapp.utils import get_authenticated_user
+from datetime import datetime, timedelta
 
 def verify_patient_auth(request):
     """Helper function to verify patient authentication and role"""
     auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return None, JsonResponse({"error": "Authorization header missing or invalid"}, status=401)
+    if not auth_header:
+        print("No Authorization header found")
+        return None, JsonResponse({"error": "Authorization header missing"}, status=401)
+        
+    if not auth_header.startswith('Bearer '):
+        print("Invalid Authorization header format")
+        return None, JsonResponse({"error": "Invalid Authorization header format. Must start with 'Bearer '"}, status=401)
     
     token = auth_header.split(' ')[1]
+    print(f"Verifying token: {token[:10]}...")  # Log first 10 chars of token
+    
     user = get_authenticated_user(token)
-
-    if not user or not user.id:
+    if not user:
+        print("Failed to authenticate user with token")
         return None, JsonResponse({"error": "Invalid or expired token"}, status=401)
 
-    try:
-        if not user.profile or user.profile.get('role') != 'patient':
-            return None, JsonResponse({"error": "Unauthorized. Only patients can access this endpoint"}, status=403)
+    if not user.id:
+        print(f"No user ID found in authenticated user")
+        return None, JsonResponse({"error": "Invalid user data"}, status=401)
 
+    try:
+        if not user.profile:
+            print(f"No profile found for user {user.id}")
+            return None, JsonResponse({"error": "User profile not found"}, status=404)
+            
+        if user.profile.get('role') != 'patient':
+            print(f"Invalid role for user {user.id}: {user.profile.get('role')}")
+            return None, JsonResponse({
+                "error": "Unauthorized. Only patients can access this endpoint",
+                "details": f"User role '{user.profile.get('role')}' is not authorized"
+            }, status=403)
+
+        print(f"Successfully verified patient: {user.id}")
         return user, None
     except Exception as e:
         print(f"Auth verification error: {str(e)}")
@@ -143,7 +164,7 @@ def update_patient_profile(request):
                 # Validate field type
                 expected_type = updateable_fields[field]
                 if not isinstance(value, expected_type):
-                    validation_errors.append(f"{field} must be of type {expected_type.__name__}")
+                    validation_errors.append(f"{field} must be of type {expected_type._name_}")
                 else:
                     update_data[field] = value
             except Exception as e:
@@ -182,5 +203,209 @@ def update_patient_profile(request):
         print(f"Profile update error: {str(e)}")
         return JsonResponse({
             "error": "Failed to update profile",
+            "details": str(e)
+        }, status=500)
+
+@csrf_exempt
+def view_appointments(request):
+    """Endpoint for patients to view their appointments"""
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    user, error_response = verify_patient_auth(request)
+    if error_response:
+        return error_response
+
+    try:
+        # Get appointments using admin_client
+        result = admin_client.table("appointments").select(
+            "*",
+            "doctor:doctor_id(*)"
+        ).eq("patient_id", user.id).order("date").order("time").execute()
+
+        appointments = result.data if result.data else []
+        
+        # Format appointments for response
+        formatted_appointments = []
+        for apt in appointments:
+            doctor_info = apt.pop("doctor", {})
+            apt["doctor_name"] = doctor_info.get("full_name") if doctor_info else None
+            formatted_appointments.append(apt)
+
+        return JsonResponse({
+            "message": "Appointments retrieved successfully",
+            "appointments": formatted_appointments
+        }, status=200)
+
+    except Exception as e:
+        print(f"View appointments error: {str(e)}")
+        return JsonResponse({
+            "error": "Failed to retrieve appointments",
+            "details": str(e)
+        }, status=500)
+
+@csrf_exempt
+def request_appointment(request):
+    """Endpoint for patients to request new appointments"""
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    user, error_response = verify_patient_auth(request)
+    if error_response:
+        return error_response
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({
+            "error": "Invalid JSON in request body",
+            "details": str(e)
+        }, status=400)
+
+    # Validate required fields
+    required_fields = ["doctor_id", "date", "time", "type"]
+    missing_fields = [field for field in required_fields if not data.get(field)]
+    if missing_fields:
+        return JsonResponse({
+            "error": "Missing required fields",
+            "details": f"Please provide: {', '.join(missing_fields)}"
+        }, status=400)
+
+    try:
+        # Validate date and time
+        appointment_datetime = datetime.strptime(f"{data['date']} {data['time']}", "%Y-%m-%d %H:%M")
+        if appointment_datetime < datetime.now():
+            return JsonResponse({
+                "error": "Invalid appointment time",
+                "details": "Appointment time must be in the future"
+            }, status=400)
+
+        # Verify doctor exists
+        doctor_result = admin_client.table("staff_profiles").select("*").eq("user_id", data["doctor_id"]).execute()
+        if not doctor_result.data:
+            return JsonResponse({
+                "error": "Doctor not found",
+                "details": "Please provide a valid doctor ID"
+            }, status=400)
+
+        # Check for conflicting appointments
+        conflict_check = admin_client.table("appointments").select("*").eq("doctor_id", data["doctor_id"]).eq("date", data["date"]).eq("time", data["time"]).execute()
+        if conflict_check.data:
+            return JsonResponse({
+                "error": "Time slot not available",
+                "details": "Please select a different time"
+            }, status=400)
+
+        # Create appointment
+        appointment_data = {
+            "patient_id": user.id,
+            "doctor_id": data["doctor_id"],
+            "date": data["date"],
+            "time": data["time"],
+            "type": data["type"],
+            "location_text": data.get("location_text", "Main Hospital"),
+            "status": "requested",
+            "initiated_by": "patient",
+            "notes": data.get("notes", ""),
+            "preferred_channel": data.get("preferred_channel", "sms")
+        }
+
+        result = admin_client.table("appointments").insert(appointment_data).execute()
+        
+        if not result.data:
+            return JsonResponse({
+                "error": "Failed to create appointment",
+                "details": "Database error occurred"
+            }, status=500)
+
+        return JsonResponse({
+            "message": "Appointment request sent successfully",
+            "appointment": result.data[0]
+        }, status=201)
+
+    except ValueError as e:
+        return JsonResponse({
+            "error": "Invalid date/time format",
+            "details": "Please use YYYY-MM-DD for date and HH:MM for time"
+        }, status=400)
+    except Exception as e:
+        print(f"Request appointment error: {str(e)}")
+        return JsonResponse({
+            "error": "Failed to create appointment request",
+            "details": str(e)
+        }, status=500)
+
+@csrf_exempt
+def respond_to_appointment(request, appointment_id):
+    """Endpoint for patients to respond to appointments"""
+    if request.method != "PUT":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    user, error_response = verify_patient_auth(request)
+    if error_response:
+        return error_response
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError as e:
+        return JsonResponse({
+            "error": "Invalid JSON in request body",
+            "details": str(e)
+        }, status=400)
+
+    if "status" not in data:
+        return JsonResponse({
+            "error": "Missing status field",
+            "details": "Please provide a status: confirmed, declined, or reschedule_requested"
+        }, status=400)
+
+    valid_statuses = ["confirmed", "declined", "reschedule_requested"]
+    if data["status"] not in valid_statuses:
+        return JsonResponse({
+            "error": "Invalid status",
+            "details": f"Status must be one of: {', '.join(valid_statuses)}"
+        }, status=400)
+
+    try:
+        # Verify appointment exists and belongs to patient
+        appointment_result = admin_client.table("appointments").select("*").eq("id", appointment_id).eq("patient_id", user.id).execute()
+        
+        if not appointment_result.data:
+            return JsonResponse({
+                "error": "Appointment not found",
+                "details": "Invalid appointment ID or unauthorized access"
+            }, status=404)
+
+        current_status = appointment_result.data[0]["status"]
+        if current_status in ["cancelled", "completed"]:
+            return JsonResponse({
+                "error": "Cannot update appointment",
+                "details": f"Appointment is already {current_status}"
+            }, status=400)
+
+        # Update appointment status
+        update_data = {
+            "status": data["status"],
+            "patient_notes": data.get("notes", ""),
+            "updated_at": datetime.now().isoformat()
+        }
+
+        result = admin_client.table("appointments").update(update_data).eq("id", appointment_id).execute()
+        
+        if not result.data:
+            return JsonResponse({
+                "error": "Failed to update appointment",
+                "details": "Database error occurred"
+            }, status=500)
+
+        return JsonResponse({
+            "message": "Appointment response submitted successfully",
+            "appointment": result.data[0]
+        }, status=200)
+
+    except Exception as e:
+        print(f"Respond to appointment error: {str(e)}")
+        return JsonResponse({
+            "error": "Failed to process appointment response",
             "details": str(e)
         }, status=500)
