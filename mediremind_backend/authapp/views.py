@@ -139,3 +139,49 @@ def logout_user(request):
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
+@csrf_exempt
+def whoami(request):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JsonResponse({"error": "Missing or invalid Authorization header"}, status=401)
+
+    token = auth_header.split(" ")[1]
+
+    try:
+        # Get user data from auth
+        user_data = supabase.auth.get_user(token)
+        if not user_data or not user_data.user or not user_data.user.id:
+            return JsonResponse({"error": "Invalid or expired token"}, status=401)
+
+        user_id = user_data.user.id
+
+        # First get user role from users table
+        user_result = admin_client.table("users").select("role").eq("id", user_id).execute()
+        if not user_result.data:
+            return JsonResponse({"error": "User not found"}, status=404)
+
+        role = user_result.data[0]['role']
+
+        # Get profile based on role
+        if role == "patient":
+            profile_res = admin_client.table("patients").select("*").eq("user_id", user_id).execute()
+            if profile_res.data:
+                return JsonResponse({
+                    "role": "patient",
+                    "user_id": user_id,
+                    "profile": profile_res.data[0]
+                })
+        else:
+            profile_res = admin_client.table("staff_profiles").select("*").eq("user_id", user_id).execute()
+            if profile_res.data:
+                return JsonResponse({
+                    "role": role,
+                    "user_id": user_id,
+                    "profile": profile_res.data[0]
+                })
+
+        return JsonResponse({"error": "User profile not found"}, status=404)
+
+    except Exception as e:
+        print(f"Error in whoami: {str(e)}")  # Add logging for debugging
+        return JsonResponse({"error": "Authentication failed"}, status=401)
