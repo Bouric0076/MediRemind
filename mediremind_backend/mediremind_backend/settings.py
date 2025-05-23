@@ -44,6 +44,8 @@ INSTALLED_APPS = [
 
     # Local apps
     'authapp',
+    'patients',
+    'staff_profiles',   
 ]
 
 MIDDLEWARE = [

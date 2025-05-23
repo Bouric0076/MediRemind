@@ -1,7 +1,7 @@
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
-from supabase_client import supabase  # assumes create_client is set up
+from supabase_client import supabase, admin_client  # import both clients
 
 @csrf_exempt
 def register_user(request):
@@ -29,7 +29,7 @@ def register_user(request):
 
             user_id = result.user.id
 
-            # 2. First create the base user record
+            # 2. First create the base user record using admin client
             base_user = {
                 "id": user_id,
                 "email": email,
@@ -37,9 +37,9 @@ def register_user(request):
                 "phone": phone,
                 "role": role
             }
-            supabase.table("users").insert(base_user).execute()
+            admin_client.table("users").insert(base_user).execute()
 
-            # 3. Insert into profile table
+            # 3. Insert into profile table using admin client
             profile_data = {
                 "user_id": user_id,
                 "full_name": full_name,
@@ -48,10 +48,10 @@ def register_user(request):
             }
 
             if role == "patient":
-                supabase.table("patients").insert(profile_data).execute()
+                admin_client.table("patients").insert(profile_data).execute()
             else:
                 profile_data["position"] = role  # e.g., 'doctor', 'admin'
-                supabase.table("staff_profiles").insert(profile_data).execute()
+                admin_client.table("staff_profiles").insert(profile_data).execute()
 
             return JsonResponse({"message": "Registration successful"}, status=201)
 
@@ -116,3 +116,26 @@ def forgot_password(request):
             return JsonResponse({"error": str(e)}, status=500)
 
     return JsonResponse({"error": "Method not allowed"}, status=405)
+
+
+@csrf_exempt
+def logout_user(request):
+    if request.method == "POST":
+        try:
+            # Get the access token from the Authorization header
+            auth_header = request.headers.get('Authorization')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                return JsonResponse({"error": "Authorization header missing or invalid"}, status=401)
+
+            # Extract the token
+            token = auth_header.split(' ')[1]
+
+            # Sign out the user
+            supabase.auth.sign_out()
+            return JsonResponse({"message": "Logged out successfully"}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Method not allowed"}, status=405)
+
