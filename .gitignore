@@ -4,6 +4,7 @@
 .env.*.local
 mediremind_backend/.env
 
+
 # Python
 __pycache__/
 *.py[cod]
@@ -49,3 +50,5 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 media 
+
+mediremind_backend/vapid_keys.json
