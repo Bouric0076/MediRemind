@@ -4,9 +4,18 @@ from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
-from supabase_client import admin_client
+from supabase_client import supabase, admin_client
 from authapp.utils import get_authenticated_user
 from datetime import datetime, timedelta
+from appointments.utils import (
+    validate_appointment_type,
+    validate_appointment_datetime,
+    check_doctor_availability,
+    check_patient_availability,
+    validate_appointment_status,
+    get_filtered_appointments
+)
+from notifications.utils import send_appointment_confirmation, send_appointment_update
 
 def verify_patient_auth(request):
     """Helper function to verify patient authentication and role"""
@@ -208,7 +217,7 @@ def update_patient_profile(request):
 
 @csrf_exempt
 def view_appointments(request):
-    """Endpoint for patients to view their appointments"""
+    """Endpoint for patients to view their appointments with filtering"""
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -216,33 +225,29 @@ def view_appointments(request):
     if error_response:
         return error_response
 
-    try:
-        # Get appointments using admin_client
-        result = admin_client.table("appointments").select(
-            "*",
-            "doctor:doctor_id(*)"
-        ).eq("patient_id", user.id).order("date").order("time").execute()
+    # Get filter parameters from query string
+    filters = {
+        'status': request.GET.get('status'),
+        'start_date': request.GET.get('start_date'),
+        'end_date': request.GET.get('end_date'),
+        'type': request.GET.get('type')  # 'upcoming' or 'past'
+    }
+    
+    # Remove None values
+    filters = {k: v for k, v in filters.items() if v is not None}
 
-        appointments = result.data if result.data else []
-        
-        # Format appointments for response
-        formatted_appointments = []
-        for apt in appointments:
-            doctor_info = apt.pop("doctor", {})
-            apt["doctor_name"] = doctor_info.get("full_name") if doctor_info else None
-            formatted_appointments.append(apt)
-
-        return JsonResponse({
-            "message": "Appointments retrieved successfully",
-            "appointments": formatted_appointments
-        }, status=200)
-
-    except Exception as e:
-        print(f"View appointments error: {str(e)}")
+    success, result = get_filtered_appointments(user.id, is_doctor=False, **filters)
+    
+    if not success:
         return JsonResponse({
             "error": "Failed to retrieve appointments",
-            "details": str(e)
+            "details": result
         }, status=500)
+
+    return JsonResponse({
+        "message": "Appointments retrieved successfully",
+        "appointments": result
+    }, status=200)
 
 @csrf_exempt
 def request_appointment(request):
@@ -271,38 +276,54 @@ def request_appointment(request):
             "details": f"Please provide: {', '.join(missing_fields)}"
         }, status=400)
 
+    # Validate appointment type
+    valid, error_msg = validate_appointment_type(data["type"])
+    if not valid:
+        return JsonResponse({
+            "error": "Invalid appointment type",
+            "details": error_msg
+        }, status=400)
+
+    # Validate date and time
+    valid, error_msg = validate_appointment_datetime(data["date"], data["time"])
+    if not valid:
+        return JsonResponse({
+            "error": "Invalid appointment date/time",
+            "details": error_msg
+        }, status=400)
+
+    # Verify doctor exists
+    doctor_result = admin_client.table("staff_profiles").select("*").eq("user_id", data["doctor_id"]).execute()
+    if not doctor_result.data:
+        return JsonResponse({
+            "error": "Doctor not found",
+            "details": "Please provide a valid doctor ID"
+        }, status=400)
+
+    # Check doctor availability
+    valid, error_msg = check_doctor_availability(data["doctor_id"], data["date"], data["time"])
+    if not valid:
+        return JsonResponse({
+            "error": "Time slot not available",
+            "details": error_msg
+        }, status=409)
+
+    # Check patient availability
+    valid, error_msg = check_patient_availability(user.id, data["date"], data["time"])
+    if not valid:
+        return JsonResponse({
+            "error": "You already have an appointment at this time",
+            "details": error_msg
+        }, status=409)
+
     try:
-        # Validate date and time
-        appointment_datetime = datetime.strptime(f"{data['date']} {data['time']}", "%Y-%m-%d %H:%M")
-        if appointment_datetime < datetime.now():
-            return JsonResponse({
-                "error": "Invalid appointment time",
-                "details": "Appointment time must be in the future"
-            }, status=400)
-
-        # Verify doctor exists
-        doctor_result = admin_client.table("staff_profiles").select("*").eq("user_id", data["doctor_id"]).execute()
-        if not doctor_result.data:
-            return JsonResponse({
-                "error": "Doctor not found",
-                "details": "Please provide a valid doctor ID"
-            }, status=400)
-
-        # Check for conflicting appointments
-        conflict_check = admin_client.table("appointments").select("*").eq("doctor_id", data["doctor_id"]).eq("date", data["date"]).eq("time", data["time"]).execute()
-        if conflict_check.data:
-            return JsonResponse({
-                "error": "Time slot not available",
-                "details": "Please select a different time"
-            }, status=400)
-
         # Create appointment
         appointment_data = {
             "patient_id": user.id,
             "doctor_id": data["doctor_id"],
             "date": data["date"],
             "time": data["time"],
-            "type": data["type"],
+            "type": data["type"].lower(),
             "location_text": data.get("location_text", "Main Hospital"),
             "status": "requested",
             "initiated_by": "patient",
@@ -318,16 +339,17 @@ def request_appointment(request):
                 "details": "Database error occurred"
             }, status=500)
 
+        # Send confirmation notification
+        appointment_id = result.data[0]["id"]
+        send_success, send_message = send_appointment_confirmation(appointment_id)
+        if not send_success:
+            print(f"Failed to send appointment confirmation: {send_message}")
+
         return JsonResponse({
             "message": "Appointment request sent successfully",
             "appointment": result.data[0]
         }, status=201)
 
-    except ValueError as e:
-        return JsonResponse({
-            "error": "Invalid date/time format",
-            "details": "Please use YYYY-MM-DD for date and HH:MM for time"
-        }, status=400)
     except Exception as e:
         print(f"Request appointment error: {str(e)}")
         return JsonResponse({
@@ -359,11 +381,12 @@ def respond_to_appointment(request, appointment_id):
             "details": "Please provide a status: confirmed, declined, or reschedule_requested"
         }, status=400)
 
-    valid_statuses = ["confirmed", "declined", "reschedule_requested"]
-    if data["status"] not in valid_statuses:
+    # Validate status
+    valid, error_msg = validate_appointment_status(data["status"], is_doctor=False)
+    if not valid:
         return JsonResponse({
             "error": "Invalid status",
-            "details": f"Status must be one of: {', '.join(valid_statuses)}"
+            "details": error_msg
         }, status=400)
 
     try:
@@ -398,6 +421,17 @@ def respond_to_appointment(request, appointment_id):
                 "details": "Database error occurred"
             }, status=500)
 
+        # Send notification based on status
+        if data["status"] == "confirmed":
+            send_success, send_message = send_appointment_confirmation(appointment_id)
+        elif data["status"] == "reschedule_requested":
+            send_success, send_message = send_appointment_update(appointment_id, "reschedule")
+        elif data["status"] == "declined":
+            send_success, send_message = send_appointment_update(appointment_id, "cancellation")
+
+        if not send_success:
+            print(f"Failed to send appointment update notification: {send_message}")
+
         return JsonResponse({
             "message": "Appointment response submitted successfully",
             "appointment": result.data[0]
@@ -408,8 +442,4 @@ def respond_to_appointment(request, appointment_id):
         return JsonResponse({
             "error": "Failed to process appointment response",
             "details": str(e)
-<<<<<<< HEAD
         }, status=500)
-=======
-        }, status=500)
->>>>>>> 4c8be3e (Implemented Appointment logic for the staff profile app.)
