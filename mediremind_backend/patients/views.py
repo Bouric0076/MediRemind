@@ -339,9 +339,14 @@ def request_appointment(request):
                 "details": "Database error occurred"
             }, status=500)
 
-        # Send confirmation notification
+        # Fetch patient and doctor emails
         appointment_id = result.data[0]["id"]
-        send_success, send_message = send_appointment_confirmation(appointment_id)
+        patient_email = user.profile.get('email')
+        doctor_result = admin_client.table("staff_profiles").select("email").eq("user_id", data["doctor_id"]).single().execute()
+        doctor_email = doctor_result.data["email"] if doctor_result.data else None
+
+        # Send notification to both
+        send_success, send_message = send_appointment_confirmation(appointment_id, patient_email=patient_email, doctor_email=doctor_email)
         if not send_success:
             print(f"Failed to send appointment confirmation: {send_message}")
 
@@ -406,13 +411,11 @@ def respond_to_appointment(request, appointment_id):
                 "details": f"Appointment is already {current_status}"
             }, status=400)
 
-        # Update appointment status
+        # Update appointment
         update_data = {
             "status": data["status"],
-            "patient_notes": data.get("notes", ""),
-            "updated_at": datetime.now().isoformat()
+            "notes": data.get("notes", "")
         }
-
         result = admin_client.table("appointments").update(update_data).eq("id", appointment_id).execute()
         
         if not result.data:
@@ -421,25 +424,119 @@ def respond_to_appointment(request, appointment_id):
                 "details": "Database error occurred"
             }, status=500)
 
-        # Send notification based on status
+        # Fetch patient and doctor emails
+        patient_email = user.profile.get('email')
+        doctor_id = appointment_result.data[0]["doctor_id"]
+        doctor_result = admin_client.table("staff_profiles").select("email").eq("user_id", doctor_id).single().execute()
+        doctor_email = doctor_result.data["email"] if doctor_result.data else None
+
+        # Send notification to both
         if data["status"] == "confirmed":
-            send_success, send_message = send_appointment_confirmation(appointment_id)
+            send_success, send_message = send_appointment_confirmation(
+                appointment_id, patient_email=patient_email, doctor_email=doctor_email
+            )
         elif data["status"] == "reschedule_requested":
-            send_success, send_message = send_appointment_update(appointment_id, "reschedule")
+            send_success, send_message = send_appointment_update(
+                appointment_id, "reschedule", patient_email=patient_email, doctor_email=doctor_email
+            )
         elif data["status"] == "declined":
-            send_success, send_message = send_appointment_update(appointment_id, "cancellation")
+            send_success, send_message = send_appointment_update(
+                appointment_id, "cancellation", patient_email=patient_email, doctor_email=doctor_email
+            )
+        else:
+            send_success, send_message = (True, "No notification needed")
 
         if not send_success:
-            print(f"Failed to send appointment update notification: {send_message}")
+            print(f"Failed to send appointment notification: {send_message}")
 
         return JsonResponse({
-            "message": "Appointment response submitted successfully",
+            "message": "Appointment updated successfully",
             "appointment": result.data[0]
-        }, status=200)
+        })
 
     except Exception as e:
         print(f"Respond to appointment error: {str(e)}")
         return JsonResponse({
             "error": "Failed to process appointment response",
+            "details": str(e)
+        }, status=500)
+
+def verify_staff_auth(request):
+    """Helper function to verify staff authentication and role"""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        print("No Authorization header found")
+        return None, JsonResponse({"error": "Authorization header missing"}, status=401)
+        
+    if not auth_header.startswith('Bearer '):
+        print("Invalid Authorization header format")
+        return None, JsonResponse({"error": "Invalid Authorization header format. Must start with 'Bearer '"}, status=401)
+    
+    token = auth_header.split(' ')[1]
+    print(f"Verifying token: {token[:10]}...")  # Log first 10 chars of token
+    
+    user = get_authenticated_user(token)
+    if not user:
+        print("Failed to authenticate user with token")
+        return None, JsonResponse({"error": "Invalid or expired token"}, status=401)
+
+    if not user.id:
+        print(f"No user ID found in authenticated user")
+        return None, JsonResponse({"error": "Invalid user data"}, status=401)
+
+    try:
+        if not user.profile:
+            print(f"No profile found for user {user.id}")
+            return None, JsonResponse({"error": "User profile not found"}, status=404)
+            
+        if user.profile.get('role') not in ['doctor', 'staff']:
+            print(f"Invalid role for user {user.id}: {user.profile.get('role')}")
+            return None, JsonResponse({
+                "error": "Unauthorized. Only staff members can access this endpoint",
+                "details": f"User role '{user.profile.get('role')}' is not authorized"
+            }, status=403)
+
+        print(f"Successfully verified staff member: {user.id}")
+        return user, None
+    except Exception as e:
+        print(f"Auth verification error: {str(e)}")
+        return None, JsonResponse({"error": "Authentication verification failed"}, status=500)
+
+@csrf_exempt
+def get_all_patients(request):
+    """Endpoint to get all available patients"""
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    user, error_response = verify_staff_auth(request)
+    if error_response:
+        return error_response
+
+    try:
+        # Get all patients with their basic information
+        result = admin_client.table("patients").select(
+            "user_id",
+            "full_name",
+            "phone",
+            "email",
+            "gender",
+            "date_of_birth"
+        ).execute()
+
+        if not result.data:
+            return JsonResponse({
+                "message": "No patients found",
+                "patients": []
+            }, status=200)
+
+        return JsonResponse({
+            "message": "Patients retrieved successfully",
+            "patients": result.data
+        }, status=200)
+
+    except Exception as e:
+        print(f"Get all patients error: {str(e)}")
+        return JsonResponse({
+            "error": "Failed to retrieve patients",
             "details": str(e)
         }, status=500)

@@ -283,4 +283,117 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Support
 
-For support, email support@mediremind.com or create an issue in the repository. 
+For support, email support@mediremind.com or create an issue in the repository.
+
+---
+
+# MediRemind Frontend (Flutter)
+
+## Overview
+
+MediRemind's frontend is a cross-platform Flutter application that provides a seamless experience for both patients and staff (doctors/admins). It connects to the Django backend via REST APIs, supports role-based dashboards, and offers a modern, user-friendly interface.
+
+## Features
+
+- **Authentication:** Secure login/register with role-based navigation.
+- **Role-based Dashboards:** Separate flows and screens for patients and staff.
+- **Appointment Management:** Book, view, cancel, and manage appointments.
+- **Profile Management:** View and edit user profiles.
+- **Notifications:** Real-time reminders and updates (via backend).
+- **Modern UI:** Consistent, beautiful design across all screens.
+
+## App Structure
+
+```
+lib/
+├── core/           # Theme, constants, and app-wide config
+├── models/         # Data models (User, Appointment, Doctor, etc.)
+├── services/       # API service for backend communication
+├── widgets/        # Reusable UI components (buttons, cards, fields)
+├── views/          # Screens (login, dashboard, appointment, profile, etc.)
+├── routes/         # App routes and navigation
+└── main.dart       # App entry point
+```
+
+## Main Workflows
+
+### 1. Authentication Flow
+- User opens the app and is greeted with a modern onboarding/welcome screen.
+- User can **Sign In** or **Create Account**.
+- On login/register, the app authenticates with the backend and retrieves the user's role.
+- The user is redirected to the appropriate dashboard (patient or staff).
+
+### 2. Patient Workflow
+- **Dashboard:** Shows profile summary and upcoming appointments.
+- **Book Appointment:** Patient can request a new appointment by selecting type, doctor, date, and time.
+- **View Appointments:** List of all appointments with details and status.
+- **Cancel Appointment:** Patient can cancel upcoming appointments.
+- **Profile:** View and edit personal information.
+
+### 3. Staff Workflow
+- **Dashboard:** Shows staff profile, quick actions, and recent appointments.
+- **Schedule Appointment:** Staff can schedule appointments for patients.
+- **Manage Appointments:** View, complete, or cancel appointments.
+- **Add Patient:** (Future) Add new patients to the system.
+- **Profile:** View and edit staff information.
+
+### 4. Navigation & Routing
+- Uses named routes for all screens.
+- Navigation is role-aware and context-sensitive.
+- All screens use a consistent AppBar, background, and spacing.
+
+## UI/UX Logic
+
+- **Theme:** Uses a custom theme with a vivid blue primary color, soft backgrounds, rounded cards, and modern typography.
+- **Widgets:** All forms use custom InputField and CustomButton widgets for consistency.
+- **Cards:** Appointments, profiles, and quick actions are displayed in rounded, shadowed cards.
+- **Responsiveness:** Layouts adapt to different screen sizes and platforms (mobile, web, desktop).
+- **Error Handling:** All API errors are shown with friendly messages and retry options.
+
+## How the Application Works (End-to-End)
+
+1. **User Registration & Login**
+   - User registers or logs in via the Flutter app.
+   - Credentials are sent to the Django backend, which authenticates and returns a JWT token and user role.
+
+2. **Role-Based Navigation**
+   - The app stores the token securely and fetches the user's role.
+   - Patients see the patient dashboard; staff see the staff dashboard.
+
+3. **Appointments**
+   - Patients can request appointments; staff can schedule/manage them.
+   - All appointment actions (create, update, cancel) are sent to the backend via REST API.
+   - Appointment status and details are always up-to-date.
+
+4. **Profile Management**
+   - Users can view and edit their profile.
+   - Changes are sent to the backend and reflected in the app.
+
+5. **Notifications**
+   - The backend sends reminders and updates via push/WhatsApp.
+   - The app displays real-time status and reminders.
+
+6. **Logout**
+   - User can log out, which clears the session and returns to the login screen.
+
+## Running the Frontend
+
+1. **Install Flutter** (https://flutter.dev/docs/get-started/install)
+2. **Clone the repository** and navigate to the frontend directory.
+3. **Install dependencies:**
+   ```bash
+   flutter pub get
+   ```
+4. **Run the app:**
+   ```bash
+   flutter run
+   ```
+   - For web: `flutter run -d chrome`
+   - For desktop: `flutter run -d windows` (or macos/linux)
+
+5. **Configure API endpoints** in `lib/core/constants.dart` if your backend is not running on localhost.
+
+## Contribution
+
+- All UI code follows best practices for readability and maintainability.
+- New screens and features should use the existing theme and widgets for consistency. 

@@ -4,6 +4,12 @@ from .twilio_client import twilio_client
 from .push_notifications import push_notifications
 from .models import PushSubscription
 import pytz
+from .email_client import email_client
+from .beem_client import beem_client
+from .push_notifications import send_push_notification
+import logging
+
+logger = logging.getLogger(__name__)
 
 def format_appointment_time(date_str, time_str):
     """Format appointment date and time for messages"""
@@ -148,46 +154,118 @@ def send_appointment_reminder(appointment_id):
     except Exception as e:
         return False, str(e)
 
-def send_appointment_confirmation(appointment_id):
-    """Send appointment confirmation notification"""
+def send_appointment_confirmation(appointment_data, patient_email, doctor_email):
+    """Send appointment confirmation notifications to both patient and doctor"""
     try:
-        appointment_data, error = get_appointment_data(appointment_id)
-        if error:
-            return False, error
-            
-        # Send push notification
-        success, message = push_notifications.send_appointment_update_push(
-            appointment_data["patient_id"],
-            appointment_data,
-            "confirmation"
+        # Send email to patient
+        success, message = email_client.send_appointment_confirmation_email(
+            appointment_data=appointment_data,
+            recipient_email=patient_email,
+            is_patient=True
         )
-        
         if not success:
-            return False, f"Failed to send push notification: {message}"
-            
-        return True, "Confirmation sent successfully"
+            logger.error(f"Failed to send confirmation email to patient: {message}")
+
+        # Send email to doctor
+        success, message = email_client.send_appointment_confirmation_email(
+            appointment_data=appointment_data,
+            recipient_email=doctor_email,
+            is_patient=False
+        )
+        if not success:
+            logger.error(f"Failed to send confirmation email to doctor: {message}")
+
+        # Send SMS to patient if phone number is available
+        if appointment_data.get('patient_phone'):
+            success, message = beem_client.send_sms(
+                recipient=appointment_data['patient_phone'],
+                message=f"Your appointment with Dr. {appointment_data['doctor_name']} has been confirmed for {appointment_data['date']} at {appointment_data['time']}."
+            )
+            if not success:
+                logger.error(f"Failed to send confirmation SMS to patient: {message}")
+
+        # Send WhatsApp message to patient if phone number is available
+        if appointment_data.get('patient_phone'):
+            success, message = twilio_client.send_whatsapp(
+                to=appointment_data['patient_phone'],
+                message=f"Your appointment with Dr. {appointment_data['doctor_name']} has been confirmed for {appointment_data['date']} at {appointment_data['time']}."
+            )
+            if not success:
+                logger.error(f"Failed to send confirmation WhatsApp to patient: {message}")
+
+        # Send push notification to patient if device token is available
+        if appointment_data.get('patient_device_token'):
+            success, message = send_push_notification(
+                device_token=appointment_data['patient_device_token'],
+                title="Appointment Confirmed",
+                body=f"Your appointment with Dr. {appointment_data['doctor_name']} has been confirmed for {appointment_data['date']} at {appointment_data['time']}."
+            )
+            if not success:
+                logger.error(f"Failed to send confirmation push notification to patient: {message}")
+
+        return True, "Notifications sent successfully"
+
     except Exception as e:
+        logger.error(f"Error sending appointment confirmation notifications: {str(e)}")
         return False, str(e)
 
-def send_appointment_update(appointment_id, update_type):
-    """Send appointment update notification"""
+def send_appointment_update(appointment_data, update_type, patient_email, doctor_email):
+    """Send appointment update notifications to both patient and doctor"""
     try:
-        appointment_data, error = get_appointment_data(appointment_id)
-        if error:
-            return False, error
-            
-        # Send push notification
-        success, message = push_notifications.send_appointment_update_push(
-            appointment_data["patient_id"],
-            appointment_data,
-            update_type
+        # Send email to patient
+        success, message = email_client.send_appointment_update_email(
+            appointment_data=appointment_data,
+            update_type=update_type,
+            recipient_email=patient_email,
+            is_patient=True
         )
-        
         if not success:
-            return False, f"Failed to send push notification: {message}"
-            
-        return True, "Update notification sent successfully"
+            logger.error(f"Failed to send update email to patient: {message}")
+
+        # Send email to doctor
+        success, message = email_client.send_appointment_update_email(
+            appointment_data=appointment_data,
+            update_type=update_type,
+            recipient_email=doctor_email,
+            is_patient=False
+        )
+        if not success:
+            logger.error(f"Failed to send update email to doctor: {message}")
+
+        # Send SMS to patient if phone number is available
+        if appointment_data.get('patient_phone'):
+            message = f"Your appointment with Dr. {appointment_data['doctor_name']} has been {update_type}ed for {appointment_data['date']} at {appointment_data['time']}."
+            success, msg = beem_client.send_sms(
+                recipient=appointment_data['patient_phone'],
+                message=message
+            )
+            if not success:
+                logger.error(f"Failed to send update SMS to patient: {msg}")
+
+        # Send WhatsApp message to patient if phone number is available
+        if appointment_data.get('patient_phone'):
+            message = f"Your appointment with Dr. {appointment_data['doctor_name']} has been {update_type}ed for {appointment_data['date']} at {appointment_data['time']}."
+            success, msg = twilio_client.send_whatsapp(
+                to=appointment_data['patient_phone'],
+                message=message
+            )
+            if not success:
+                logger.error(f"Failed to send update WhatsApp to patient: {msg}")
+
+        # Send push notification to patient if device token is available
+        if appointment_data.get('patient_device_token'):
+            success, message = send_push_notification(
+                device_token=appointment_data['patient_device_token'],
+                title=f"Appointment {update_type.title()}ed",
+                body=f"Your appointment with Dr. {appointment_data['doctor_name']} has been {update_type}ed for {appointment_data['date']} at {appointment_data['time']}."
+            )
+            if not success:
+                logger.error(f"Failed to send update push notification to patient: {message}")
+
+        return True, "Notifications sent successfully"
+
     except Exception as e:
+        logger.error(f"Error sending appointment update notifications: {str(e)}")
         return False, str(e)
 
 def trigger_manual_reminder(appointment_id):

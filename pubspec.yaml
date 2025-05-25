@@ -1,0 +1,39 @@
+name: mediremind
+description: A medical appointment management system.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+  http: ^1.1.0
+  shared_preferences: ^2.2.0
+  intl: ^0.18.1
+  provider: ^6.0.5
+  flutter_secure_storage: ^8.0.0
+  flutter_datetime_picker_plus: ^2.1.0
+
+flutter:
+  assets:
+    - assets/med_icon.png
+  uses-material-design: true
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+  flutter_native_splash: ^2.4.0
+
+flutter_native_splash:
+  image: "assets/med_icon.png"
+  background_color: "#000000"
+  android: true
+  ios: true
+  web: true
+
+
+

@@ -348,9 +348,14 @@ def schedule_appointment(request):
                 "details": "Database error occurred"
             }, status=500)
 
-        # Send confirmation notification
+        # Fetch patient and doctor emails
         appointment_id = result.data[0]["id"]
-        send_success, send_message = send_appointment_confirmation(appointment_id)
+        doctor_email = user.profile.get('email')
+        patient_result = admin_client.table("patients").select("email").eq("user_id", data["patient_id"]).single().execute()
+        patient_email = patient_result.data["email"] if patient_result.data else None
+
+        # Send notification to both
+        send_success, send_message = send_appointment_confirmation(appointment_id, patient_email=patient_email, doctor_email=doctor_email)
         if not send_success:
             print(f"Failed to send appointment confirmation: {send_message}")
 
@@ -415,58 +420,11 @@ def respond_to_request(request, appointment_id):
                 "details": f"Appointment is in {current_status} state"
             }, status=400)
 
-        # Update appointment status
+        # Update appointment
         update_data = {
-            "status": "scheduled" if data["status"] == "approved" else data["status"],
-            "doctor_notes": data.get("notes", ""),
-            "updated_at": datetime.now().isoformat()
+            "status": data["status"],
+            "notes": data.get("notes", "")
         }
-
-        # If rescheduling, validate and update new time
-        if data["status"] == "reschedule":
-            if not data.get("new_date") or not data.get("new_time"):
-                return JsonResponse({
-                    "error": "Missing reschedule information",
-                    "details": "Please provide new_date and new_time for rescheduling"
-                }, status=400)
-
-            # Validate new date and time
-            valid, error_msg = validate_appointment_datetime(data["new_date"], data["new_time"])
-            if not valid:
-                return JsonResponse({
-                    "error": "Invalid reschedule date/time",
-                    "details": error_msg
-                }, status=400)
-
-            # Check doctor availability for new time
-            valid, error_msg = check_doctor_availability(
-                user.id, 
-                data["new_date"], 
-                data["new_time"],
-                exclude_appointment_id=appointment_id
-            )
-            if not valid:
-                return JsonResponse({
-                    "error": "New time slot not available",
-                    "details": error_msg
-                }, status=409)
-
-            # Check patient availability for new time
-            valid, error_msg = check_patient_availability(
-                appointment_result.data[0]["patient_id"],
-                data["new_date"],
-                data["new_time"],
-                exclude_appointment_id=appointment_id
-            )
-            if not valid:
-                return JsonResponse({
-                    "error": "Patient unavailable at new time",
-                    "details": error_msg
-                }, status=409)
-
-            update_data["date"] = data["new_date"]
-            update_data["time"] = data["new_time"]
-
         result = admin_client.table("appointments").update(update_data).eq("id", appointment_id).execute()
         
         if not result.data:
@@ -475,25 +433,102 @@ def respond_to_request(request, appointment_id):
                 "details": "Database error occurred"
             }, status=500)
 
-        # Send notification based on status
+        # Fetch patient and doctor emails
+        doctor_email = user.profile.get('email')
+        patient_id = appointment_result.data[0]["patient_id"]
+        patient_result = admin_client.table("patients").select("email").eq("user_id", patient_id).single().execute()
+        patient_email = patient_result.data["email"] if patient_result.data else None
+
+        # Send notification to both
         if data["status"] == "approved":
-            send_success, send_message = send_appointment_confirmation(appointment_id)
+            send_success, send_message = send_appointment_confirmation(
+                appointment_id, patient_email=patient_email, doctor_email=doctor_email
+            )
         elif data["status"] == "reschedule":
-            send_success, send_message = send_appointment_update(appointment_id, "reschedule")
+            send_success, send_message = send_appointment_update(
+                appointment_id, "reschedule", patient_email=patient_email, doctor_email=doctor_email
+            )
         else:  # rejected
-            send_success, send_message = send_appointment_update(appointment_id, "cancellation")
+            send_success, send_message = send_appointment_update(
+                appointment_id, "cancellation", patient_email=patient_email, doctor_email=doctor_email
+            )
 
         if not send_success:
-            print(f"Failed to send appointment update notification: {send_message}")
+            print(f"Failed to send appointment notification: {send_message}")
 
         return JsonResponse({
-            "message": "Appointment response submitted successfully",
+            "message": "Appointment updated successfully",
             "appointment": result.data[0]
-        }, status=200)
+        })
 
     except Exception as e:
         print(f"Respond to request error: {str(e)}")
         return JsonResponse({
             "error": "Failed to process appointment response",
+            "details": str(e)
+        }, status=500)
+
+@csrf_exempt
+def get_available_doctors(request):
+    """Endpoint to fetch all available doctors"""
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    # Verify user authentication (any authenticated user can fetch doctors)
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return JsonResponse({"error": "Authorization header missing"}, status=401)
+        
+    if not auth_header.startswith('Bearer '):
+        return JsonResponse({"error": "Invalid Authorization header format"}, status=401)
+    
+    token = auth_header.split(' ')[1]
+    user = get_authenticated_user(token)
+    if not user:
+        return JsonResponse({"error": "Invalid or expired token"}, status=401)
+
+    try:
+        # First get all users with doctor role
+        doctor_users = admin_client.table("users").select("id").eq("role", "doctor").execute()
+        
+        if not doctor_users.data:
+            return JsonResponse({
+                "message": "No doctors found",
+                "doctors": []
+            }, status=200)
+
+        # Get doctor IDs
+        doctor_ids = [doc["id"] for doc in doctor_users.data]
+
+        # Then get staff profiles for those doctors
+        result = admin_client.table("staff_profiles") \
+            .select("user_id, full_name, position, email, phone") \
+            .in_("user_id", doctor_ids) \
+            .execute()
+
+        if not result.data:
+            return JsonResponse({
+                "message": "No doctors found",
+                "doctors": []
+            }, status=200)
+
+        # Format the response
+        doctors = [{
+            "id": doc["user_id"],  # Using user_id as the doctor's ID
+            "full_name": doc["full_name"],
+            "position": doc.get("position", "General"),
+            "email": doc.get("email"),
+            "phone_number": doc.get("phone")
+        } for doc in result.data]
+
+        return JsonResponse({
+            "message": "Doctors retrieved successfully",
+            "doctors": doctors
+        }, status=200)
+
+    except Exception as e:
+        print(f"Error fetching doctors: {str(e)}")
+        return JsonResponse({
+            "error": "Failed to retrieve doctors",
             "details": str(e)
         }, status=500)
